@@ -25,10 +25,13 @@ int charWidth = 8;
 int curX=0;
 int curY=0;
 rgba *framebufraw;
+int framebufheight = 600;
 rgb curColor={255,255,255};
 char* totalText;
 size_t totalTextBufSize = 4096;
-void TypeCharacter(char character, int *w, int *h) {
+int renderY=0; //fast scroll down
+XImage *framebuf;
+void TypeCharacter(char character) {
 	int max_width = 0;
 	int cur_width = 0;
 	int num_lines = 1;
@@ -41,9 +44,35 @@ void TypeCharacter(char character, int *w, int *h) {
 		cur_width = 0;
         curX=0;
         curY+=lineHeight;
+
+		if(curY > framebufheight){
+			framebufheight+=lineHeight;
+			framebufraw=realloc(framebufraw,framebufheight*800*sizeof(rgba));
+			framebuf->data=(char*)framebufraw;
+			framebuf->height+=600;
+			renderY+=lineHeight;
+		}
 		return;
 	}
+	if(character == '\b'){
+		curX-=charWidth;
 
+		for (int row = 0; row < (int)lineHeight; row++) {
+			for (int col = 0; col < (int)charWidth; col++) {
+				int dst_x = curX + col;
+				int dst_y = curY + row;
+
+				if (dst_x < 0 || dst_x >= 800 || dst_y < 0 || dst_y >= framebufheight)
+					continue;
+				int dst_index = dst_y * 800 + dst_x;
+
+				framebufraw[dst_index].r = 0;
+				framebufraw[dst_index].g = 0;
+				framebufraw[dst_index].b = 0;
+			}
+		}
+		return;
+	}
 	if (character == '\r') {
 		curX = 0;
 		return;
@@ -51,6 +80,9 @@ void TypeCharacter(char character, int *w, int *h) {
 
 	if (character == '\t') {
 		curX = ((curX / charWidth) + 8) * charWidth;
+		return;
+	}
+	if(character == '\a'){
 		return;
 	}
 	FT_Load_Char(curFace, character, FT_LOAD_RENDER);
@@ -68,9 +100,7 @@ void TypeCharacter(char character, int *w, int *h) {
 	if (cur_width > max_width)
 		max_width = cur_width;
 
-	*w = max_width;
     charWidth=max_width;
-	*h = max_ascent + max_descent + (num_lines - 1) * lineHeight;
 
 	FT_Load_Char(curFace, character, FT_LOAD_RENDER);
 	g = curFace->glyph;
@@ -78,18 +108,42 @@ void TypeCharacter(char character, int *w, int *h) {
 	int x = 0 + g->bitmap_left;
     int baseline = curFace->size->metrics.ascender >> 6;
     int y = baseline - g->bitmap_top;
+	printf("%i\n",(int)g->bitmap.rows);
+	for (int row = 0; row < (int)lineHeight; row++) {
+		for (int col = 0; col < (int)g->bitmap.width; col++) {
+			int dst_x = curX + x + col;
+			int dst_y = curY + y + row;
 
+			if (dst_x < 0 || dst_x >= 800 || dst_y < 0 || dst_y >= 600)
+				continue;
+			int dst_index = dst_y * 800 + dst_x;
+
+			framebufraw[dst_index].r = 0;
+			framebufraw[dst_index].g = 0;
+			framebufraw[dst_index].b = 0;
+		}
+	}
+	if(g->bitmap.rows+curY > framebufheight){
+		framebufheight+=lineHeight;
+		framebufraw=realloc(framebufraw,framebufheight*800*sizeof(rgba));
+		framebuf->data=(char*)framebufraw;
+		framebuf->height+=lineHeight;
+		renderY+=lineHeight;
+	}
 	for (int row = 0; row < (int)g->bitmap.rows; row++) {
 		for (int col = 0; col < (int)g->bitmap.width; col++) {
 			int dst_x = curX + x + col;
 			int dst_y = curY + y + row;
 
-            if (dst_x < 0 || dst_x >= 800 || dst_y < 0 || dst_y >= 600)
+            if (dst_x < 0 || dst_x >= 800 || dst_y < 0 || dst_y >= framebufheight)
                 continue;
             int dst_index = dst_y * 800 + dst_x;
 			int src_index = row * g->bitmap.pitch + col;
 			unsigned char a = g->bitmap.buffer[src_index];
 
+			framebufraw[dst_index].r = 0;
+			framebufraw[dst_index].g = 0;
+			framebufraw[dst_index].b = 0;
 			framebufraw[dst_index].r = a * curColor.r / 255;
 			framebufraw[dst_index].g = a * curColor.g / 255;
 			framebufraw[dst_index].b = a * curColor.b / 255;
@@ -98,7 +152,13 @@ void TypeCharacter(char character, int *w, int *h) {
 	}
 	curX+=max_width;
 }
-XImage *framebuf;
+void RenderFullScreen(){
+	char* coolpointer = totalText;
+	while(coolpointer){
+		TypeCharacter(*coolpointer);
+		coolpointer++;
+	}
+}
 char *frametext;
 Window MainWindow;
 GC gc;
@@ -176,7 +236,7 @@ void CharHandler(char c){
                 } else {
                     int w;
                     int h;
-                    TypeCharacter(c,&w,&h);
+                    TypeCharacter(c);
                 }
                 break;
             case STATE_ESC:
@@ -200,8 +260,7 @@ void CharHandler(char c){
         }
 }
 void RenderTTY() {
-
-	XPutImage(dpy, MainWindow, gc, framebuf, 0, 0, 0, 0, 800, 600);
+	XPutImage(dpy, MainWindow, gc, framebuf, 0, renderY, 0, 0, 800, 600);
 }
 int main() {
 	InitFreetype();
@@ -230,24 +289,22 @@ int main() {
 	    XCreateWindow(dpy, RootWindow, WindowX, WindowY, WindowWidth,
 	                  WindowHeight, BorderWidth, WindowDepth, WindowClass,
 	                  WindowVisual, AttributeValueMask, &WindowAttributes);
-
+	XStoreName(dpy, MainWindow, "Matty");
 	XMapWindow(dpy, MainWindow);
-	framebufraw = calloc(800 * 600, sizeof(rgba));
-    int w;
-    int h;
+	framebufraw = calloc(800 * framebufheight, sizeof(rgba));
     SetFontSize(16);
-    TypeCharacter('M',&w,&h);
+    TypeCharacter('M');
     free(framebufraw);
-    framebufraw = calloc(800 * 600, sizeof(rgba));
+    framebufraw = calloc(800 * framebufheight, sizeof(rgba));
 	framebuf =
 	    XCreateImage(dpy, DefaultVisual(dpy, screen), DefaultDepth(dpy, screen),
-	                 ZPixmap, 0, (char *)framebufraw, 800, 600, 32, 800 * 4);
+	                 ZPixmap, 0, (char *)framebufraw, 800, framebufheight, 32, 800 * 4);
 	gc = XCreateGC(dpy, MainWindow, 0, NULL);
 
     printf("charWidth=%d, lineHeight=%d\n", charWidth, lineHeight);  // Debug
     struct winsize ws;
-    ws.ws_row = 800/w;
-    ws.ws_col = 600/h;
+    ws.ws_row = 800/charWidth;
+    ws.ws_col = 600/lineHeight;
     ws.ws_xpixel = 800;
     ws.ws_ypixel = 600;
 	pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
@@ -292,7 +349,7 @@ int main() {
 				}
 				if (n > 0) {
                     buf[n+1] = '\0';
-                    for(int i = 0; i<strlen(buf);i++){
+                    for(int i = 0; i<n;i++){
                         CharHandler(buf[i]);
                     }
 					RenderTTY();
@@ -316,11 +373,17 @@ int main() {
 			} break;
 			case KeyPress: {
 				XKeyPressedEvent *Event = (XKeyEvent *)&event;
-				char tmparr[2];
+				char tmparr[32];
 				KeySym ks;
-				XLookupString(&event.xkey, tmparr, 2, &ks, NULL);
-				write(master_fd, tmparr, 1);
-				printf(tmparr);
+				int len = XLookupString(&event.xkey, tmparr, 2, &ks, NULL);
+				if(len==0){
+					if(ks==XK_BackSpace){
+						unsigned char bkspc = 0x7F;
+						write(master_fd, &bkspc, 1);
+					}
+				}else{
+					write(master_fd, tmparr, len);
+				}
 				RenderTTY();
 			} break;
 			}
